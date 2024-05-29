@@ -175,7 +175,7 @@ unique_ptr<ParsedExpression> SubstraitToDuckDB::TransformLiteralExpr(const subst
 		break;
 	}
 	default:
-		throw InternalException(to_string(slit.literal_type_case()));
+		throw NotImplementedException("Substrait literal not supported: %d", slit.literal_type_case());
 	}
 	return make_uniq<ConstantExpression>(dval);
 }
@@ -203,7 +203,7 @@ unique_ptr<ParsedExpression> SubstraitToDuckDB::TransformScalarFunctionExpr(cons
 			children.push_back(TransformExpr(sarg.value()));
 		} else if (sarg.has_type()) {
 			// type expression
-			throw NotImplementedException("Type arguments in Substrait expressions are not supported yet!");
+			throw NotImplementedException("Type arguments in Substrait expressions are not supported yet");
 		} else {
 			// enum expression
 			D_ASSERT(sarg.has_enum_());
@@ -319,7 +319,7 @@ LogicalType SubstraitToDuckDB::SubstraitToDuckType(const ::substrait::Type &s_ty
 	} else if (s_type.has_fp64()) {
 		return LogicalType(LogicalTypeId::DOUBLE);
 	} else {
-		throw InternalException("Substrait type not yet supported");
+		throw NotImplementedException("Substrait type not yet supported");
 	}
 }
 
@@ -359,7 +359,7 @@ unique_ptr<ParsedExpression> SubstraitToDuckDB::TransformExpr(const substrait::E
 		return TransformInExpr(sexpr);
 	case substrait::Expression::RexTypeCase::kSubquery:
 	default:
-		throw InternalException("Unsupported expression type " + to_string(sexpr.rex_type_case()));
+		throw NotImplementedException("Unsupported expression type: %d", sexpr.rex_type_case());
 	}
 }
 
@@ -420,7 +420,7 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformJoinOp(const substrait::Rel &so
 		djointype = JoinType::SEMI;
 		break;
 	default:
-		throw InternalException("Unsupported join type");
+		throw NotImplementedException("Unsupported join type");
 	}
 	unique_ptr<ParsedExpression> join_condition = TransformExpr(sjoin.expression());
 	return make_shared_ptr<JoinRelation>(TransformOp(sjoin.left())->Alias("left"),
