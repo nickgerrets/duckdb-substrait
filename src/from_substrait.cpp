@@ -7,13 +7,17 @@
 
 #include "duckdb/main/relation/limit_relation.hpp"
 #include "duckdb/main/relation/projection_relation.hpp"
+#include "duckdb/main/relation/setop_relation.hpp"
 #include "duckdb/main/relation/aggregate_relation.hpp"
 #include "duckdb/main/relation/filter_relation.hpp"
 #include "duckdb/main/relation/order_relation.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/enums/set_operation_type.hpp"
 
 #include "duckdb/parser/expression/comparison_expression.hpp"
 
@@ -33,26 +37,46 @@ const case_insensitive_set_t SubstraitToDuckDB::valid_extract_subfields = {
     "year",    "month",       "day",          "decade", "century", "millenium",
     "quarter", "microsecond", "milliseconds", "second", "minute",  "hour"};
 
-std::string &SubstraitToDuckDB::RemapFunctionName(std::string &function_name) {
-	auto it = function_names_remap.find(function_name);
-	if (it != function_names_remap.end()) {
-		function_name = it->second;
+std::string SubstraitToDuckDB::RemapFunctionName(std::string &function_name) {
+	// Lets first drop any extension id
+	string name;
+	for (auto &c : function_name) {
+		if (c == ':') {
+			break;
+		}
+		name += c;
 	}
-	return function_name;
+	auto it = function_names_remap.find(name);
+	if (it != function_names_remap.end()) {
+		name = it->second;
+	}
+	return name;
+}
+
+std::string SubstraitToDuckDB::RemoveExtension(std::string &function_name) {
+	// Lets first drop any extension id
+	string name;
+	for (auto &c : function_name) {
+		if (c == ':') {
+			break;
+		}
+		name += c;
+	}
+	return name;
 }
 
 SubstraitToDuckDB::SubstraitToDuckDB(Connection &con_p, const string &serialized, bool json) : con(con_p) {
-	if (con_p.context->client_data->http_state) {
-		con_p.context->client_data->http_state->Reset();
-	}
-	con_p.context->client_data->http_state = make_uniq<HTTPState>();
+	auto http_state = HTTPState::TryGetState(*con_p.context);
+	http_state->Reset();
+
 	if (!json) {
 		if (!plan.ParseFromString(serialized)) {
 			throw std::runtime_error("Was not possible to convert binary into Substrait plan");
 		}
 	} else {
-		if (!google::protobuf::util::JsonStringToMessage(serialized, &plan).ok()) {
-			throw std::runtime_error("Was not possible to convert binary into Substrait plan");
+		google::protobuf::util::Status status = google::protobuf::util::JsonStringToMessage(serialized, &plan);
+		if (!status.ok()) {
+			throw std::runtime_error("Was not possible to convert JSON into Substrait plan: " + status.ToString());
 		}
 	}
 
@@ -169,6 +193,7 @@ void SubstraitToDuckDB::VerifyCorrectExtractSubfield(const string &subfield) {
 
 unique_ptr<ParsedExpression> SubstraitToDuckDB::TransformScalarFunctionExpr(const substrait::Expression &sexpr) {
 	auto function_name = FindFunction(sexpr.scalar_function().function_reference());
+	function_name = RemoveExtension(function_name);
 	vector<unique_ptr<ParsedExpression>> children;
 	vector<string> enum_expressions;
 	auto &function_arguments = sexpr.scalar_function().arguments();
@@ -202,8 +227,25 @@ unique_ptr<ParsedExpression> SubstraitToDuckDB::TransformScalarFunctionExpr(cons
 		                                       std::move(children[1]));
 	} else if (function_name == "not_equal") {
 		D_ASSERT(children.size() == 2);
-		return make_uniq<ComparisonExpression>(ExpressionType::COMPARE_NOTEQUAL, std::move(children[0]),
-		                                       std::move(children[1]));
+		// FIXME: We do a not_like if we are doing a string comparison
+		// This is due to substrait not supporting !~~
+		bool is_it_string = false;
+		for (idx_t child_idx = 0; child_idx < 2; child_idx++) {
+			if (children[child_idx]->GetExpressionClass() == ExpressionClass::CONSTANT) {
+				auto &constant = children[child_idx]->Cast<ConstantExpression>();
+				if (constant.value.type() == LogicalType::VARCHAR) {
+					is_it_string = true;
+				}
+			}
+		}
+		if (is_it_string) {
+			string not_equal = "!~~";
+			return make_uniq<FunctionExpression>(not_equal, std::move(children));
+		} else {
+			return make_uniq<ComparisonExpression>(ExpressionType::COMPARE_NOTEQUAL, std::move(children[0]),
+			                                       std::move(children[1]));
+		}
+
 	} else if (function_name == "lte") {
 		D_ASSERT(children.size() == 2);
 		return make_uniq<ComparisonExpression>(ExpressionType::COMPARE_LESSTHANOREQUALTO, std::move(children[0]),
@@ -381,25 +423,26 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformJoinOp(const substrait::Rel &so
 		throw InternalException("Unsupported join type");
 	}
 	unique_ptr<ParsedExpression> join_condition = TransformExpr(sjoin.expression());
-	return make_shared<JoinRelation>(TransformOp(sjoin.left())->Alias("left"),
-	                                 TransformOp(sjoin.right())->Alias("right"), std::move(join_condition), djointype);
+	return make_shared_ptr<JoinRelation>(TransformOp(sjoin.left())->Alias("left"),
+	                                     TransformOp(sjoin.right())->Alias("right"), std::move(join_condition),
+	                                     djointype);
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformCrossProductOp(const substrait::Rel &sop) {
 	auto &sub_cross = sop.cross();
 
-	return make_shared<CrossProductRelation>(TransformOp(sub_cross.left())->Alias("left"),
-	                                         TransformOp(sub_cross.right())->Alias("right"));
+	return make_shared_ptr<CrossProductRelation>(TransformOp(sub_cross.left())->Alias("left"),
+	                                             TransformOp(sub_cross.right())->Alias("right"));
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformFetchOp(const substrait::Rel &sop) {
 	auto &slimit = sop.fetch();
-	return make_shared<LimitRelation>(TransformOp(slimit.input()), slimit.count(), slimit.offset());
+	return make_shared_ptr<LimitRelation>(TransformOp(slimit.input()), slimit.count(), slimit.offset());
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformFilterOp(const substrait::Rel &sop) {
 	auto &sfilter = sop.filter();
-	return make_shared<FilterRelation>(TransformOp(sfilter.input()), TransformExpr(sfilter.condition()));
+	return make_shared_ptr<FilterRelation>(TransformOp(sfilter.input()), TransformExpr(sfilter.condition()));
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformProjectOp(const substrait::Rel &sop) {
@@ -412,8 +455,8 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformProjectOp(const substrait::Rel 
 	for (size_t i = 0; i < expressions.size(); i++) {
 		mock_aliases.push_back("expr_" + to_string(i));
 	}
-	return make_shared<ProjectionRelation>(TransformOp(sop.project().input()), std::move(expressions),
-	                                       std::move(mock_aliases));
+	return make_shared_ptr<ProjectionRelation>(TransformOp(sop.project().input()), std::move(expressions),
+	                                           std::move(mock_aliases));
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformAggregateOp(const substrait::Rel &sop) {
@@ -430,18 +473,22 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformAggregateOp(const substrait::Re
 
 	for (auto &smeas : sop.aggregate().measures()) {
 		vector<unique_ptr<ParsedExpression>> children;
-		for (auto &sarg : smeas.measure().arguments()) {
+		auto &s_aggr_function = smeas.measure();
+		bool is_distinct = s_aggr_function.invocation() ==
+		                   substrait::AggregateFunction_AggregationInvocation_AGGREGATION_INVOCATION_DISTINCT;
+		for (auto &sarg : s_aggr_function.arguments()) {
 			children.push_back(TransformExpr(sarg.value()));
 		}
-		auto function_name = FindFunction(smeas.measure().function_reference());
+		auto function_name = FindFunction(s_aggr_function.function_reference());
 		if (function_name == "count" && children.empty()) {
 			function_name = "count_star";
 		}
-		expressions.push_back(make_uniq<FunctionExpression>(RemapFunctionName(function_name), std::move(children)));
+		expressions.push_back(make_uniq<FunctionExpression>(RemapFunctionName(function_name), std::move(children),
+		                                                    nullptr, nullptr, is_distinct));
 	}
 
-	return make_shared<AggregateRelation>(TransformOp(sop.aggregate().input()), std::move(expressions),
-	                                      std::move(groups));
+	return make_shared_ptr<AggregateRelation>(TransformOp(sop.aggregate().input()), std::move(expressions),
+	                                          std::move(groups));
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformReadOp(const substrait::Rel &sop) {
@@ -479,7 +526,7 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformReadOp(const substrait::Rel &so
 	}
 
 	if (sget.has_filter()) {
-		scan = make_shared<FilterRelation>(std::move(scan), TransformExpr(sget.filter()));
+		scan = make_shared_ptr<FilterRelation>(std::move(scan), TransformExpr(sget.filter()));
 	}
 
 	if (sget.has_projection()) {
@@ -493,7 +540,7 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformReadOp(const substrait::Rel &so
 			expressions.push_back(make_uniq<PositionalReferenceExpression>(sproj.field() + 1));
 		}
 
-		scan = make_shared<ProjectionRelation>(std::move(scan), std::move(expressions), std::move(aliases));
+		scan = make_shared_ptr<ProjectionRelation>(std::move(scan), std::move(expressions), std::move(aliases));
 	}
 
 	return scan;
@@ -504,8 +551,44 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformSortOp(const substrait::Rel &so
 	for (auto &sordf : sop.sort().sorts()) {
 		order_nodes.push_back(TransformOrder(sordf));
 	}
-	return make_shared<OrderRelation>(TransformOp(sop.sort().input()), std::move(order_nodes));
+	return make_shared_ptr<OrderRelation>(TransformOp(sop.sort().input()), std::move(order_nodes));
 }
+
+static duckdb::SetOperationType TransformSetOperationType(substrait::SetRel_SetOp setop) {
+	switch (setop) {
+	case substrait::SetRel_SetOp::SetRel_SetOp_SET_OP_UNION_ALL: {
+		return duckdb::SetOperationType::UNION;
+	}
+	case substrait::SetRel_SetOp::SetRel_SetOp_SET_OP_MINUS_PRIMARY: {
+		return duckdb::SetOperationType::EXCEPT;
+	}
+	case substrait::SetRel_SetOp::SetRel_SetOp_SET_OP_INTERSECTION_PRIMARY: {
+		return duckdb::SetOperationType::INTERSECT;
+	}
+	default: {
+		throw duckdb::NotImplementedException("SetOperationType transform not implemented for SetRel_SetOp type %d",
+		                                      setop);
+	}
+	}
+}
+
+shared_ptr<Relation> SubstraitToDuckDB::TransformSetOp(const substrait::Rel &sop) {
+	D_ASSERT(sop.has_set());
+	auto &set = sop.set();
+	auto set_op_type = set.op();
+	auto type = TransformSetOperationType(set_op_type);
+
+	auto &inputs = set.inputs();
+	auto input_count = set.inputs_size();
+	if (input_count > 2) {
+		throw NotImplementedException("The amount of inputs (%d) is not supported for this set operation", input_count);
+	}
+	auto lhs = TransformOp(inputs[0]);
+	auto rhs = TransformOp(inputs[1]);
+
+	return make_shared_ptr<SetOpRelation>(std::move(lhs), std::move(rhs), type);
+}
+
 shared_ptr<Relation> SubstraitToDuckDB::TransformOp(const substrait::Rel &sop) {
 	switch (sop.rel_type_case()) {
 	case substrait::Rel::RelTypeCase::kJoin:
@@ -524,6 +607,8 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformOp(const substrait::Rel &sop) {
 		return TransformReadOp(sop);
 	case substrait::Rel::RelTypeCase::kSort:
 		return TransformSortOp(sop);
+	case substrait::Rel::RelTypeCase::kSet:
+		return TransformSetOp(sop);
 	default:
 		throw InternalException("Unsupported relation type " + to_string(sop.rel_type_case()));
 	}
@@ -538,7 +623,7 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformRootOp(const substrait::RelRoot
 		aliases.push_back(column_name);
 		expressions.push_back(make_uniq<PositionalReferenceExpression>(id++));
 	}
-	return make_shared<ProjectionRelation>(TransformOp(sop.input()), std::move(expressions), aliases);
+	return make_shared_ptr<ProjectionRelation>(TransformOp(sop.input()), std::move(expressions), aliases);
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformPlan() {

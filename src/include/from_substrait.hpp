@@ -5,6 +5,7 @@
 #include <memory>
 #include "substrait/plan.pb.h"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 
 namespace duckdb {
 class SubstraitToDuckDB {
@@ -26,6 +27,7 @@ private:
 	shared_ptr<Relation> TransformAggregateOp(const substrait::Rel &sop);
 	shared_ptr<Relation> TransformReadOp(const substrait::Rel &sop);
 	shared_ptr<Relation> TransformSortOp(const substrait::Rel &sop);
+	shared_ptr<Relation> TransformSetOp(const substrait::Rel &sop);
 
 	//! Transform Substrait Expressions to DuckDB Expressions
 	unique_ptr<ParsedExpression> TransformExpr(const substrait::Expression &sexpr);
@@ -37,7 +39,8 @@ private:
 	unique_ptr<ParsedExpression> TransformInExpr(const substrait::Expression &sexpr);
 
 	void VerifyCorrectExtractSubfield(const string &subfield);
-	std::string &RemapFunctionName(std::string &function_name);
+	std::string RemapFunctionName(std::string &function_name);
+	std::string RemoveExtension(std::string &function_name);
 	LogicalType SubstraitToDuckType(const ::substrait::Type &s_type);
 	//! Looks up for aggregation function in functions_map
 	string FindFunction(uint64_t id);
