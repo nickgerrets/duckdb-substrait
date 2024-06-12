@@ -9,7 +9,7 @@ get_tpch_query = pytest.importorskip('ibis_tpch_util')
 pandas = pytest.importorskip("pandas")
 
 def unbound_from_duckdb(table):  # noqa: D103
-    return ibis.table(list(zip(table.columns, map(parse_type.parse, [str(x) for x in table.dtypes]))), name=table.alias)
+    return ibis.table(list(zip(table.columns, map(parse_type.DuckDBType.from_string, [str(x) for x in table.dtypes]))), name=table.alias)
 
 class TPCHBackend(BaseBackend.BaseBackend):  # noqa: D101
     def __init__(self,duck_con,  scale_factor=0.1):  # noqa: D107
