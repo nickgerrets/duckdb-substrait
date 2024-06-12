@@ -20,8 +20,8 @@ class IbisDuckDBTester:
 		
 	def open(self, require):
 		# Create connections to the db
-		self.con = require('substrait', self.path, read_only=True)
-		self.ibis_con = ibis.connect(f"duckdb://{self.path}", read_only='True')
+		self.con = require('substrait', self.path)
+		self.ibis_con = ibis.connect(f"duckdb://{self.path}")
 
 	def test(self, expression_producer, *args):
 		expr = expression_producer(self.ibis_con, *args)
