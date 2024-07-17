@@ -93,6 +93,13 @@ static void VerifySubstraitRoundtrip(unique_ptr<LogicalOperator> &query_plan, Co
 	auto actual_result = con.Query(data.query);
 
 	shared_ptr<Relation> sub_relation;
+
+	SubstraitToDuckDB transformer(con, serialized, is_json);
+	if (transformer.HasError()) {
+		
+	}
+
+
 	try {
 		sub_relation = SubstraitPlanToDuckDBRel(con, serialized, is_json);
 	} catch (duckdb::Exception &e) {
