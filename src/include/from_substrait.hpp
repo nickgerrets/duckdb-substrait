@@ -14,6 +14,10 @@ public:
 	//! Transforms Substrait Plan to DuckDB Relation
 	shared_ptr<Relation> TransformPlan();
 
+	void SetError(std::string error);
+	bool HasError() const;
+	const std::string &GetError();
+
 private:
 	//! Transforms Substrait Plan Root To a DuckDB Relation
 	shared_ptr<Relation> TransformRootOp(const substrait::RelRoot &sop);
@@ -57,5 +61,7 @@ private:
 	//! names
 	static const unordered_map<std::string, std::string> function_names_remap;
 	static const case_insensitive_set_t valid_extract_subfields;
+
+	std::string error_string = nullptr;
 };
 } // namespace duckdb

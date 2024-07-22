@@ -92,30 +92,20 @@ static void VerifySubstraitRoundtrip(unique_ptr<LogicalOperator> &query_plan, Co
 	// We round-trip the generated json and verify if the result is the same
 	auto actual_result = con.Query(data.query);
 
-	shared_ptr<Relation> sub_relation;
+	
 
 	SubstraitToDuckDB transformer(con, serialized, is_json);
+	shared_ptr<Relation> sub_relation = transformer.TransformPlan();
 	if (transformer.HasError()) {
-		
-	}
-
-
-	try {
-		sub_relation = SubstraitPlanToDuckDBRel(con, serialized, is_json);
-	} catch (duckdb::Exception &e) {
-		// TODO: ideally capture the error
 		query_plan->Print();
-		throw std::runtime_error(string("Transform Substrait to DuckDB Relation failed: ") + e.what());
+		throw std::runtime_error(string("substrait plan transformation failed: ") + transformer.GetError());
 	}
 
-	unique_ptr<QueryResult> substrait_result;
-	try {
-		substrait_result = sub_relation->Execute();
-	} catch (duckdb::Exception &e) {
-		// TODO: ideally capture the error
+	unique_ptr<QueryResult> substrait_result = sub_relation->Execute();
+	if (substrait_result->HasError()) {
 		query_plan->Print();
 		sub_relation->Print();
-		throw InternalException(string("Substrait plan execution failed: ") + e.what());
+		throw std::runtime_error(string("Substrait plan execution failed: ") + substrait_result->GetError());
 	}
 
 	substrait_result->names = actual_result->names;

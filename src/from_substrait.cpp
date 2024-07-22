@@ -24,7 +24,6 @@
 #include "substrait/plan.pb.h"
 #include "google/protobuf/util/json_util.h"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/common/http_state.hpp"
 
 namespace duckdb {
 const std::unordered_map<std::string, std::string> SubstraitToDuckDB::function_names_remap = {
@@ -36,6 +35,18 @@ const std::unordered_map<std::string, std::string> SubstraitToDuckDB::function_n
 const case_insensitive_set_t SubstraitToDuckDB::valid_extract_subfields = {
     "year",    "month",       "day",          "decade", "century", "millenium",
     "quarter", "microsecond", "milliseconds", "second", "minute",  "hour"};
+
+void SubstraitToDuckDB::SetError(std::string error) {
+	this->error_string = error;
+}
+
+bool SubstraitToDuckDB::HasError() const {
+	return !this->error_string.empty();
+}
+
+const std::string &SubstraitToDuckDB::GetError() {
+	return this->error_string;
+}
 
 std::string SubstraitToDuckDB::RemapFunctionName(std::string &function_name) {
 	// Lets first drop any extension id
@@ -66,9 +77,6 @@ std::string SubstraitToDuckDB::RemoveExtension(std::string &function_name) {
 }
 
 SubstraitToDuckDB::SubstraitToDuckDB(Connection &con_p, const string &serialized, bool json) : con(con_p) {
-	auto http_state = HTTPState::TryGetState(*con_p.context);
-	http_state->Reset();
-
 	if (!json) {
 		if (!plan.ParseFromString(serialized)) {
 			throw std::runtime_error("Was not possible to convert binary into Substrait plan");
@@ -610,7 +618,8 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformOp(const substrait::Rel &sop) {
 	case substrait::Rel::RelTypeCase::kSet:
 		return TransformSetOp(sop);
 	default:
-		throw InternalException("Unsupported relation type " + to_string(sop.rel_type_case()));
+		this->SetError("Unsupported relation type " + to_string(sop.rel_type_case()));
+		return shared_ptr<Relation>();
 	}
 }
 
@@ -628,8 +637,10 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformRootOp(const substrait::RelRoot
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformPlan() {
 	if (plan.relations().empty()) {
-		throw InvalidInputException("Substrait Plan does not have a SELECT statement");
+		this->SetError("Substrait Plan does not have a SELECT statement");
+		return shared_ptr<Relation>();
 	}
+
 	auto d_plan = TransformRootOp(plan.relations(0).root());
 	return d_plan;
 }
