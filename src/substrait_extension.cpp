@@ -92,8 +92,6 @@ static void VerifySubstraitRoundtrip(unique_ptr<LogicalOperator> &query_plan, Co
 	// We round-trip the generated json and verify if the result is the same
 	auto actual_result = con.Query(data.query);
 
-	
-
 	SubstraitToDuckDB transformer(con, serialized, is_json);
 	shared_ptr<Relation> sub_relation = transformer.TransformPlan();
 	if (transformer.HasError()) {

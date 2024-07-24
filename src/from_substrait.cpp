@@ -594,6 +594,10 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformSetOp(const substrait::Rel &sop
 	auto lhs = TransformOp(inputs[0]);
 	auto rhs = TransformOp(inputs[1]);
 
+	if (!lhs || !rhs) {
+		return shared_ptr<Relation>(nullptr);
+	}
+
 	return make_shared_ptr<SetOpRelation>(std::move(lhs), std::move(rhs), type);
 }
 
@@ -619,7 +623,7 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformOp(const substrait::Rel &sop) {
 		return TransformSetOp(sop);
 	default:
 		this->SetError("Unsupported relation type " + to_string(sop.rel_type_case()));
-		return shared_ptr<Relation>();
+		return shared_ptr<Relation>(nullptr);
 	}
 }
 
@@ -632,17 +636,21 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformRootOp(const substrait::RelRoot
 		aliases.push_back(column_name);
 		expressions.push_back(make_uniq<PositionalReferenceExpression>(id++));
 	}
-	return make_shared_ptr<ProjectionRelation>(TransformOp(sop.input()), std::move(expressions), aliases);
+
+	auto op = TransformOp(sop.input());
+	if (!op) {
+		return shared_ptr<Relation>(nullptr);
+	}
+	return make_shared_ptr<ProjectionRelation>(op, std::move(expressions), aliases);
 }
 
 shared_ptr<Relation> SubstraitToDuckDB::TransformPlan() {
 	if (plan.relations().empty()) {
 		this->SetError("Substrait Plan does not have a SELECT statement");
-		return shared_ptr<Relation>();
+		return shared_ptr<Relation>(nullptr);
 	}
 
-	auto d_plan = TransformRootOp(plan.relations(0).root());
-	return d_plan;
+	return TransformRootOp(plan.relations(0).root());
 }
 
 } // namespace duckdb
