@@ -1,6 +1,7 @@
 #include "from_substrait.hpp"
 
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/relation.hpp"
 #include "duckdb/parser/expression/list.hpp"
 #include "duckdb/main/relation/join_relation.hpp"
 #include "duckdb/main/relation/cross_product_relation.hpp"
@@ -428,7 +429,8 @@ shared_ptr<Relation> SubstraitToDuckDB::TransformJoinOp(const substrait::Rel &so
 		djointype = JoinType::SEMI;
 		break;
 	default:
-		throw NotImplementedException("Unsupported join type");
+		this->SetError("Unsupported join type: " + sjoin.GetTypeName());
+		return shared_ptr<Relation>(nullptr);
 	}
 	unique_ptr<ParsedExpression> join_condition = TransformExpr(sjoin.expression());
 	return make_shared_ptr<JoinRelation>(TransformOp(sjoin.left())->Alias("left"),
